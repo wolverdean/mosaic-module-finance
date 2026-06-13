@@ -156,6 +156,51 @@ describe('AC7/AC8 — report routes', () => {
   })
 })
 
+// AC10 — Import
+describe('AC10 — import endpoint', () => {
+  it('imports valid rows and returns count', async () => {
+    const res = await request(app).post('/api/finance/transactions/import').send({
+      rows: [
+        { date: '2026-06-01', amount: 50,  type: 'expense', notes: 'Coffee' },
+        { date: '2026-06-02', amount: 100, type: 'income',  notes: 'Freelance' },
+      ],
+    }).expect(200)
+    expect(res.body.imported).toBe(2)
+    expect(res.body.errors).toHaveLength(0)
+  })
+
+  it('returns 400 when rows missing', async () => {
+    await request(app).post('/api/finance/transactions/import').send({}).expect(400)
+  })
+
+  it('returns 400 when rows exceeds 500', async () => {
+    const rows = Array.from({ length: 501 }, (_, i) => ({ date: '2026-01-01', amount: 1, type: 'expense' }))
+    await request(app).post('/api/finance/transactions/import').send({ rows }).expect(400)
+  })
+
+  it('skips bad rows and reports errors', async () => {
+    const res = await request(app).post('/api/finance/transactions/import').send({
+      rows: [
+        { date: 'bad-date', amount: 10, type: 'expense' },
+        { date: '2026-06-01', amount: 20, type: 'income' },
+      ],
+    }).expect(200)
+    expect(res.body.imported).toBe(1)
+    expect(res.body.errors).toHaveLength(1)
+    expect(res.body.errors[0].row).toBe(0)
+  })
+
+  it('matches categoryName to existing category', async () => {
+    const { body: cat } = await request(app).post('/api/finance/categories').send({ name: 'Groceries', type: 'expense' })
+    const res = await request(app).post('/api/finance/transactions/import').send({
+      rows: [{ date: '2026-06-01', amount: 30, type: 'expense', categoryName: 'groceries' }],
+    }).expect(200)
+    expect(res.body.imported).toBe(1)
+    const txns = await request(app).get('/api/finance/transactions?month=2026-06')
+    expect(txns.body[0].category_id).toBe(cat.id)
+  })
+})
+
 // AC9 — Frontend
 describe('AC9 — frontend', () => {
   it('GET /ui.js returns javascript', async () => {

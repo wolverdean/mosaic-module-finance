@@ -9,6 +9,7 @@ import {
 import {
   listTransactions, createTransaction, updateTransaction, deleteTransaction, getTransaction,
 } from '../services/transactions.service.js'
+import { importTransactions } from '../services/import.service.js'
 import {
   getMonthlySummary, getInventoryIncome,
 } from '../services/summary.service.js'
@@ -20,7 +21,8 @@ const tracer      = trace.getTracer('finance')
 const meter       = metrics.getMeter('finance')
 const reqCounter  = meter.createCounter('finance.requests_total',    { description: 'Finance route requests' })
 const reqDuration = meter.createHistogram('finance.request_duration_ms', { unit: 'ms' })
-const txCounter   = meter.createCounter('finance.transactions_total', { description: 'Transactions created' })
+const txCounter      = meter.createCounter('finance.transactions_total', { description: 'Transactions created' })
+const importCounter  = meter.createCounter('finance.import_total',        { description: 'Transactions imported' })
 
 function track(op: string, fn: () => void): void {
   const t0 = Date.now()
@@ -82,6 +84,22 @@ export function createRouter(ctxRef: { current: ModuleContext | null }): Router 
   })
 
   // ── Transactions ───────────────────────────────────────────────────────────
+
+  router.post('/transactions/import', (req, res) => {
+    track('transactions.import', () => {
+      const { rows } = req.body
+      if (!Array.isArray(rows)) { res.status(400).json({ error: 'rows must be an array' }); return }
+      if (rows.length > 500)    { res.status(400).json({ error: 'maximum 500 rows per import' }); return }
+      tracer.startActiveSpan('finance.import', span => {
+        span.setAttribute('rows.count', rows.length)
+        span.end()
+      })
+      const result = importTransactions(db(), req.userId, rows)
+      importCounter.add(result.imported, { result: 'imported' })
+      if (result.errors.length) importCounter.add(result.errors.length, { result: 'error' })
+      res.json(result)
+    })
+  })
 
   router.get('/transactions', (req, res) => {
     track('transactions.list', () => {

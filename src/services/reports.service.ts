@@ -14,7 +14,7 @@ export function getWeeklyTransactions(db: Database, userId: number, start: strin
 
   return rows.map(r => ({
     id:      r.id,
-    title:   `${r.type === 'income' ? '+' : '-'}£${r.amount.toFixed(2)}${r.category_name ? ` · ${r.category_name}` : ''}${r.notes ? ` — ${r.notes}` : ''}`,
+    title:   `${r.type === 'income' ? '+' : '-'}$${r.amount.toFixed(2)}${r.category_name ? ` · ${r.category_name}` : ''}${r.notes ? ` — ${r.notes}` : ''}`,
     dueDate: r.date,
     status:  r.type,
     url:     '/finance',

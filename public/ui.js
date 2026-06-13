@@ -19,7 +19,7 @@
 
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
 
-  function fmt(amount) { return '£' + Number(amount).toFixed(2) }
+  function fmt(amount) { return '$' + Number(amount).toFixed(2) }
 
   function prevMonth(m) {
     const [y, mo] = m.split('-').map(Number)
@@ -105,8 +105,9 @@
         <!-- Add transaction button -->
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
           <span style="color:#94a3b8;font-size:.85rem;font-weight:600">Transactions</span>
-          <div style="display:flex;gap:.5rem">
-            <button id="f-cats" style="padding:.3rem .7rem;background:#334155;color:#94a3b8;border:none;border-radius:6px;cursor:pointer;font-size:.8rem">Categories</button>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end">
+            <button id="f-cats"        style="padding:.3rem .7rem;background:#334155;color:#94a3b8;border:none;border-radius:6px;cursor:pointer;font-size:.8rem">Categories</button>
+            <button id="f-import"      style="padding:.3rem .7rem;background:#334155;color:#94a3b8;border:none;border-radius:6px;cursor:pointer;font-size:.8rem">↑ Import</button>
             <button id="f-add-expense" style="padding:.3rem .7rem;background:#ef4444;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.8rem">− Expense</button>
             <button id="f-add-income"  style="padding:.3rem .7rem;background:#10b981;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.8rem">+ Income</button>
           </div>
@@ -123,6 +124,7 @@
     container.querySelector('#f-add-expense').onclick = () => showForm('expense')
     container.querySelector('#f-add-income').onclick  = () => showForm('income')
     container.querySelector('#f-cats').onclick        = () => showCategories()
+    container.querySelector('#f-import').onclick      = () => showImport()
 
     container.querySelectorAll('.f-tx-edit').forEach(btn => {
       btn.onclick = (e) => { e.stopPropagation(); showForm(null, btn.dataset.id) }
@@ -173,7 +175,7 @@
       <button id="f-back" style="background:none;border:none;color:#6366f1;cursor:pointer;padding:0;margin-bottom:1rem">← Back</button>
       <h2 style="margin:0 0 1.5rem;color:#f1f5f9">${existing ? 'Edit' : 'New'} ${type === 'income' ? 'Income' : 'Expense'}</h2>
       <label style="display:block;margin-bottom:1rem">
-        <span style="color:#94a3b8;font-size:.85rem">Amount (£)</span>
+        <span style="color:#94a3b8;font-size:.85rem">Amount ($)</span>
         <input id="f-amount" type="number" step="0.01" min="0.01" value="${existing ? existing.amount : ''}"
           style="display:block;width:100%;margin-top:.25rem;padding:.5rem;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#f1f5f9;box-sizing:border-box">
       </label>
@@ -297,6 +299,184 @@
       }
     })
     container.querySelector('#f-back').onclick = () => renderMain()
+  }
+
+  // ─── CSV import ───────────────────────────────────────────────────────────
+
+  const DATE_HEADERS    = ['date','transaction date','posted date','trans date']
+  const AMOUNT_HEADERS  = ['amount']
+  const DEBIT_HEADERS   = ['debit','debit amount']
+  const CREDIT_HEADERS  = ['credit','credit amount']
+  const NOTES_HEADERS   = ['description','notes','memo','payee','narrative']
+  const TYPE_HEADERS    = ['type']
+  const CAT_HEADERS     = ['category']
+
+  function parseCSVText(text) {
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n')
+    if (lines.length < 2) return { headers: [], rows: [] }
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase())
+    const rows = lines.slice(1).map(line => {
+      const cells = []
+      let inQ = false, cell = ''
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === '"') { inQ = !inQ }
+        else if (ch === ',' && !inQ) { cells.push(cell.trim()); cell = '' }
+        else { cell += ch }
+      }
+      cells.push(cell.trim())
+      const obj = {}
+      headers.forEach((h, i) => { obj[h] = (cells[i] || '').replace(/^"|"$/g, '').trim() })
+      return obj
+    }).filter(r => Object.values(r).some(v => v !== ''))
+    return { headers, rows }
+  }
+
+  function csvToImportRows(headers, rows, catNames) {
+    const find = (candidates) => candidates.find(c => headers.includes(c))
+    const dateCol   = find(DATE_HEADERS)
+    const amtCol    = find(AMOUNT_HEADERS)
+    const debitCol  = find(DEBIT_HEADERS)
+    const creditCol = find(CREDIT_HEADERS)
+    const notesCol  = find(NOTES_HEADERS)
+    const typeCol   = find(TYPE_HEADERS)
+    const catCol    = find(CAT_HEADERS)
+
+    const valid = [], errors = []
+    rows.forEach((row, i) => {
+      const dateRaw = dateCol ? row[dateCol] : ''
+      // normalise MM/DD/YYYY → YYYY-MM-DD
+      let date = dateRaw
+      const slashMatch = dateRaw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+      if (slashMatch) date = `${slashMatch[3]}-${slashMatch[1].padStart(2,'0')}-${slashMatch[2].padStart(2,'0')}`
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        errors.push({ row: i, reason: `invalid date "${dateRaw}"` }); return
+      }
+
+      let amount, type
+      if (debitCol && creditCol) {
+        const d = parseFloat(row[debitCol]  || '0')
+        const c = parseFloat(row[creditCol] || '0')
+        if (d > 0)      { amount = d; type = 'expense' }
+        else if (c > 0) { amount = c; type = 'income'  }
+        else { errors.push({ row: i, reason: 'no debit or credit value' }); return }
+      } else if (amtCol) {
+        const raw = parseFloat(row[amtCol].replace(/[^0-9.\-]/g, ''))
+        if (isNaN(raw) || raw === 0) { errors.push({ row: i, reason: 'amount is zero or missing' }); return }
+        amount = Math.abs(raw)
+        type   = typeCol
+          ? (['income','credit'].includes(row[typeCol].toLowerCase()) ? 'income' : 'expense')
+          : (raw >= 0 ? 'income' : 'expense')
+      } else {
+        errors.push({ row: i, reason: 'no amount column found' }); return
+      }
+
+      const notes        = notesCol ? row[notesCol] : ''
+      const categoryName = catCol   ? row[catCol]   : ''
+      const catMatched   = categoryName
+        ? (catNames.find(n => n.toLowerCase() === categoryName.toLowerCase()) || null)
+        : null
+
+      valid.push({ row: i, date, amount, type, notes, categoryName: catMatched || '', catDisplay: categoryName, catMatched: !!catMatched })
+    })
+    return { valid, errors }
+  }
+
+  function showImport() {
+    const input = document.createElement('input')
+    input.type   = 'file'
+    input.accept = '.csv,text/csv'
+    input.style.display = 'none'
+    document.body.appendChild(input)
+
+    input.onchange = async () => {
+      const file = input.files[0]
+      document.body.removeChild(input)
+      if (!file) return
+
+      const text = await file.text()
+      const { headers, rows } = parseCSVText(text)
+      if (!rows.length) { alert('No data rows found in CSV.'); return }
+
+      const cats = categories.length ? categories : await api.get('/categories')
+      categories = cats
+      const catNames = cats.map(c => c.name)
+      const { valid, errors } = csvToImportRows(headers, rows, catNames)
+
+      showImportPreview(valid, errors, file.name)
+    }
+    input.click()
+  }
+
+  function showImportPreview(valid, errors, filename) {
+    const allRows = [
+      ...valid.map(r  => ({ ...r, _err: false })),
+      ...errors.map(e => ({ row: e.row, _err: true, reason: e.reason })),
+    ].sort((a, b) => a.row - b.row)
+
+    container.innerHTML = `
+      <button id="f-back" style="background:none;border:none;color:#6366f1;cursor:pointer;padding:0;margin-bottom:1rem">← Back</button>
+      <h2 style="margin:0 0 .25rem;color:#f1f5f9">Import Preview</h2>
+      <p style="color:#64748b;font-size:.85rem;margin:0 0 1rem">${esc(filename)} — ${valid.length} valid, ${errors.length} error${errors.length!==1?'s':''}</p>
+      <div style="overflow-x:auto;margin-bottom:1rem">
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead>
+            <tr style="color:#64748b;border-bottom:1px solid #334155">
+              <th style="text-align:left;padding:.4rem .5rem">#</th>
+              <th style="text-align:left;padding:.4rem .5rem">Date</th>
+              <th style="text-align:right;padding:.4rem .5rem">Amount</th>
+              <th style="text-align:left;padding:.4rem .5rem">Type</th>
+              <th style="text-align:left;padding:.4rem .5rem">Category</th>
+              <th style="text-align:left;padding:.4rem .5rem">Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${allRows.map(r => r._err
+              ? `<tr style="color:#ef4444;background:rgba(239,68,68,.07)">
+                   <td style="padding:.35rem .5rem">${r.row+1}</td>
+                   <td colspan="5" style="padding:.35rem .5rem">⚠ ${esc(r.reason)}</td>
+                 </tr>`
+              : `<tr style="border-bottom:1px solid #1e293b;color:#f1f5f9">
+                   <td style="padding:.35rem .5rem;color:#64748b">${r.row+1}</td>
+                   <td style="padding:.35rem .5rem">${esc(r.date)}</td>
+                   <td style="padding:.35rem .5rem;text-align:right;color:${r.type==='income'?'#10b981':'#ef4444'}">${r.type==='expense'?'-':'+'} ${esc(fmt(r.amount))}</td>
+                   <td style="padding:.35rem .5rem;color:#94a3b8">${r.type}</td>
+                   <td style="padding:.35rem .5rem;color:${r.catMatched?'#f1f5f9':'#64748b'}">${r.catDisplay ? esc(r.catDisplay) + (r.catMatched?'':' <em>(no match)</em>') : '—'}</td>
+                   <td style="padding:.35rem .5rem;color:#94a3b8;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.notes||'')}</td>
+                 </tr>`
+            ).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div id="f-import-status" style="color:#ef4444;font-size:.85rem;margin-bottom:.75rem;display:none"></div>
+      <button id="f-confirm-import" ${valid.length===0?'disabled':''} style="padding:.6rem 1.4rem;background:#6366f1;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:1rem;opacity:${valid.length===0?.5:1}">
+        Import ${valid.length} row${valid.length!==1?'s':''}
+      </button>`
+
+    container.querySelector('#f-back').onclick = () => renderMain()
+    container.querySelector('#f-confirm-import').onclick = async (btn) => {
+      btn.target.disabled = true
+      btn.target.textContent = 'Importing…'
+      const statusEl = container.querySelector('#f-import-status')
+      try {
+        const rows = valid.map(r => ({
+          date:         r.date,
+          amount:       r.amount,
+          type:         r.type,
+          notes:        r.notes || '',
+          categoryName: r.categoryName || undefined,
+        }))
+        const result = await api.post('/transactions/import', { rows })
+        statusEl.style.display = 'none'
+        alert(`Imported ${result.imported} transaction${result.imported!==1?'s':''}${result.errors.length ? `, ${result.errors.length} skipped` : ''}.`)
+        renderMain()
+      } catch (err) {
+        statusEl.textContent = err.message || 'Import failed'
+        statusEl.style.display = 'block'
+        btn.target.disabled = false
+        btn.target.textContent = `Import ${valid.length} row${valid.length!==1?'s':''}`
+      }
+    }
   }
 
   // ─── Module registration ───────────────────────────────────────────────────
