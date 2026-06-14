@@ -1,5 +1,5 @@
 import type { ReportHooks, ModuleContext } from '@mosaic/sdk'
-import { getWeeklyTransactions, getFinanceSummary } from '../services/reports.service.js'
+import { getWeeklyTransactions, getFinanceSummary, getDetailedFinanceReport } from '../services/reports.service.js'
 
 export const reportHooks: ReportHooks = {
   weekly(ctx: ModuleContext, userId: number, start: string, end: string) {
@@ -7,5 +7,8 @@ export const reportHooks: ReportHooks = {
   },
   summary(ctx: ModuleContext, userId: number) {
     return getFinanceSummary(ctx.db.raw, userId)
+  },
+  detailed(ctx: ModuleContext, userId: number, start: string, end: string) {
+    return getDetailedFinanceReport(ctx.db.raw, userId, start, end)
   },
 }
